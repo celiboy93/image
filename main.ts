@@ -1,6 +1,5 @@
 import { Hono } from "jsr:@hono/hono";
-import { serveStatic } from "jsr:@hono/hono/deno";
-import sharp from "npm:sharp";
+import { Image } from "https://deno.land/x/imagescript@1.2.17/mod.ts";
 
 const app = new Hono();
 
@@ -12,41 +11,41 @@ app.get("/", (c) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Quality Reducer (No Resize)</title>
+        <title>Data Compressor (Deno Friendly)</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
-        <div class="bg-white p-6 rounded-xl shadow-lg w-full max-w-md">
-            <h1 class="text-2xl font-bold mb-2 text-center text-gray-800">Data Compressor</h1>
+    <body class="bg-slate-100 min-h-screen flex items-center justify-center p-4">
+        <div class="bg-white p-6 rounded-xl shadow-lg w-full max-w-md border border-slate-200">
+            <h1 class="text-xl font-bold mb-2 text-center text-slate-800">Deno Data Compressor</h1>
             <p class="text-center text-xs text-red-500 mb-6 font-semibold">
-                (Dimensions will NOT remain changed. Only Quality reduced.)
+                (No Resize - Quality Reduction Only)
             </p>
             
             <form id="uploadForm" class="space-y-4">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Local File</label>
-                    <input type="file" name="file" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
+                    <input type="file" name="file" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer">
                 </div>
 
-                <div class="text-center text-gray-400 text-xs py-2">- OR -</div>
+                <div class="text-center text-gray-400 text-xs py-1">- OR -</div>
 
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Remote URL</label>
-                    <input type="url" name="url" placeholder="https://example.com/image.jpg" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
+                    <input type="url" name="url" placeholder="https://example.com/image.jpg" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm">
                 </div>
 
-                <button type="submit" id="submitBtn" class="w-full bg-blue-600 text-white py-2.5 rounded-lg hover:bg-blue-700 transition font-medium">
+                <button type="submit" id="submitBtn" class="w-full bg-indigo-600 text-white py-2.5 rounded-lg hover:bg-indigo-700 transition font-medium">
                     Compress Data Only
                 </button>
             </form>
 
-            <div id="loading" class="hidden mt-6 text-center text-blue-600 text-sm animate-pulse">
-                Optimizing quality to fit under 60KB...
+            <div id="loading" class="hidden mt-6 text-center text-indigo-600 text-sm animate-pulse">
+                Processing image...
             </div>
 
-            <div id="error" class="hidden mt-4 text-center text-red-500 text-sm"></div>
+            <div id="error" class="hidden mt-4 p-3 bg-red-100 text-red-600 text-sm rounded text-center"></div>
 
-            <div id="resultArea" class="hidden mt-6 bg-gray-50 p-4 rounded border">
+            <div id="resultArea" class="hidden mt-6 bg-slate-50 p-4 rounded border">
                 <div class="flex justify-between text-xs font-mono mb-2">
                     <span>Original: <b id="orgSize"></b></span>
                     <span>New: <b id="newSize" class="text-green-600"></b></span>
@@ -55,7 +54,7 @@ app.get("/", (c) => {
                 
                 <img id="previewImg" class="w-full h-auto rounded border bg-white mb-3" />
                 
-                <a id="downloadLink" href="#" download="compressed_data.webp" class="block w-full text-center bg-green-500 text-white py-2 rounded hover:bg-green-600 transition text-sm">
+                <a id="downloadLink" href="#" download="compressed.jpg" class="block w-full text-center bg-green-600 text-white py-2 rounded hover:bg-green-700 transition text-sm">
                     Download
                 </a>
             </div>
@@ -95,11 +94,9 @@ app.get("/", (c) => {
                     document.getElementById('orgSize').innerText = (orgSize / 1024).toFixed(2) + ' KB';
                     document.getElementById('newSize').innerText = (newSize / 1024).toFixed(2) + ' KB';
                     
-                    if(finalQuality) {
-                        document.getElementById('qualityInfo').innerText = "Reduced Quality to: " + finalQuality + "% (Resolution Unchanged)";
-                    } else {
-                        document.getElementById('qualityInfo').innerText = "No changes made (Original was small enough)";
-                    }
+                    document.getElementById('qualityInfo').innerText = finalQuality 
+                        ? "Quality reduced to: " + finalQuality + "%"
+                        : "No changes made";
 
                     resultArea.classList.remove('hidden');
                 } catch (err) {
@@ -115,7 +112,7 @@ app.get("/", (c) => {
   `);
 });
 
-// 2. Backend Logic
+// 2. Backend Logic (Using ImageScript for Deno Deploy Compatibility)
 app.post("/process", async (c) => {
   try {
     const body = await c.req.parseBody();
@@ -129,7 +126,7 @@ app.post("/process", async (c) => {
     } 
     else if (body['url'] && typeof body['url'] === 'string' && body['url'].trim() !== "") {
       const resp = await fetch(body['url']);
-      if (!resp.ok) return c.text("Cannot fetch URL", 400);
+      if (!resp.ok) return c.text("URL fetch failed", 400);
       imageBuffer = await resp.arrayBuffer();
       originalSize = imageBuffer.byteLength;
     } else {
@@ -138,67 +135,65 @@ app.post("/process", async (c) => {
 
     if (!imageBuffer) return c.text("Invalid Data", 400);
 
-    // --- Logic ---
+    // Limits
     const LIMIT_MIN = 50 * 1024; // 50 KB
     const TARGET_MAX = 60 * 1024; // 60 KB
 
-    // 1. If original <= 50KB, return EXACT original
+    // 1. Check Original Size
     if (originalSize <= LIMIT_MIN) {
         return new Response(imageBuffer, {
             headers: {
-                "Content-Type": "image/jpeg", // fallback type
+                "Content-Type": "image/jpeg",
                 "X-Original-Size": originalSize.toString(),
                 "X-New-Size": originalSize.toString(),
             },
         });
     }
 
-    // 2. If > 50KB, Compress ONLY Quality (No Resize)
-    let processedBuffer = imageBuffer;
-    let quality = 85; // Start at 85
-    let bestFitBuffer = null;
+    // 2. Compression Logic (No Resize)
+    // Decode image (ImageScript works with PNG/JPEG)
+    const image = await Image.decode(new Uint8Array(imageBuffer));
+    
+    let processedData = new Uint8Array(imageBuffer);
+    let quality = 80;
+    let bestFitData = null;
 
-    // Try reducing quality step by step: 85 -> 75 -> 65 ... -> 15
+    // Loop to find best quality under 60KB
+    // We start at 80% and go down to 10%
     while (quality >= 10) {
-        
-        // Convert to WebP with current quality
-        // Note: No .resize() is called here!
-        const tempBuffer = await sharp(imageBuffer)
-            .webp({ 
-                quality: quality,
-                effort: 6 // maximum compression effort
-            }) 
-            .toBuffer();
+        // Encode as JPEG with current quality
+        const tempBuffer = await image.encodeJPEG(quality);
 
-        // Check if under 60KB
         if (tempBuffer.byteLength <= TARGET_MAX) {
-            bestFitBuffer = tempBuffer;
-            break; // Found it! Stop loop.
+            bestFitData = tempBuffer;
+            break; // Found target size!
         }
-
-        // If not, keep this as "best effort so far" (smallest version)
-        bestFitBuffer = tempBuffer;
         
-        // Reduce quality for next attempt
+        // Keep tracking the smallest we found so far
+        bestFitData = tempBuffer;
         quality -= 10;
     }
 
-    // Final check
-    processedBuffer = bestFitBuffer || imageBuffer;
-    const finalSize = processedBuffer.byteLength;
+    // Use the best fit (or the smallest we could get)
+    processedData = bestFitData || new Uint8Array(imageBuffer);
+    
+    // If even lowest quality is bigger than original (rare but possible with optimized originals), use original
+    if (processedData.byteLength > originalSize) {
+        processedData = new Uint8Array(imageBuffer);
+    }
 
-    return new Response(processedBuffer, {
+    return new Response(processedData, {
       headers: {
-        "Content-Type": "image/webp",
+        "Content-Type": "image/jpeg",
         "X-Original-Size": originalSize.toString(),
-        "X-New-Size": finalSize.toString(),
+        "X-New-Size": processedData.byteLength.toString(),
         "X-Final-Quality": quality.toString(),
       },
     });
 
   } catch (err) {
     console.error(err);
-    return c.text("Server Error: " + err.message, 500);
+    return c.text("Error processing image (Format might not be supported): " + err.message, 500);
   }
 });
 

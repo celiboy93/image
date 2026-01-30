@@ -14,7 +14,7 @@ app.get("/", (c) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Thumbsnap Direct Uploader</title>
+        <title>Direct Uploader (Anti-Block)</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     </head>
@@ -26,7 +26,7 @@ app.get("/", (c) => {
             </div>
 
             <h1 class="text-xl font-bold mb-6 text-center text-gray-800 mt-2">
-                <i class="fa-solid fa-fire text-red-500 mr-2"></i> Direct Link Fixer
+                <i class="fa-solid fa-shield-cat text-blue-500 mr-2"></i> Anti-Block Uploader
             </h1>
             
             <form id="uploadForm" class="space-y-5">
@@ -39,20 +39,20 @@ app.get("/", (c) => {
                 <div class="text-center text-gray-300 text-xs font-bold">- OR -</div>
 
                 <div>
-                    <input type="url" name="url" placeholder="Paste Image URL..." class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 text-sm">
+                    <input type="url" name="url" placeholder="Paste Image URL..." class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
                 </div>
 
                 <button type="submit" class="w-full bg-gray-800 text-white py-3.5 rounded-lg hover:bg-black transition font-bold shadow-lg">
-                    UPLOAD & GET DIRECT LINK
+                    UPLOAD (SAFE MODE)
                 </button>
             </form>
 
             <div id="loading" class="hidden mt-8 text-center">
-                <div class="animate-spin inline-block w-8 h-8 border-4 border-red-600 border-t-transparent rounded-full mb-3"></div>
-                <p class="text-xs text-red-600 animate-pulse font-bold tracking-widest">UPLOADING...</p>
+                <div class="animate-spin inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full mb-3"></div>
+                <p class="text-xs text-blue-600 animate-pulse font-bold tracking-widest">UPLOADING...</p>
             </div>
 
-            <div id="error" class="hidden mt-4 p-3 bg-red-100 text-red-600 text-xs rounded border border-red-200 text-center font-bold"></div>
+            <div id="error" class="hidden mt-4 p-3 bg-red-100 text-red-600 text-xs rounded border border-red-200 text-center font-mono break-words"></div>
 
             <!-- Result Section -->
             <div id="resultArea" class="hidden mt-6">
@@ -93,24 +93,27 @@ app.get("/", (c) => {
 
                 try {
                     const response = await fetch('/process', { method: 'POST', body: formData });
+                    
+                    // 🔥 Read raw text first to catch HTML/Cloudflare errors
                     const textData = await response.text(); 
                     
                     let data;
-                    try { data = JSON.parse(textData); } 
-                    catch(e) { throw new Error("Server Error: " + textData.substring(0, 100)); }
+                    try { 
+                        data = JSON.parse(textData); 
+                    } catch(e) { 
+                        // If parsing fails, show the raw text (often contains the real error reason)
+                        console.error("Raw Response:", textData);
+                        throw new Error("SERVER ERROR: " + textData.substring(0, 200) + "..."); 
+                    }
 
                     if(data.error) throw new Error(data.error);
 
-                    // --- 🔥 DATE FIX LOGIC HERE 🔥 ---
-                    const rawLink = data.data.media; // Ex: https://thumbsnap.com/i/xyz.jpg
-                    
-                    // Get Today's Date (MMDD)
+                    // --- DATE FIX LOGIC ---
+                    const rawLink = data.data.media;
                     const now = new Date();
-                    const month = String(now.getMonth() + 1).padStart(2, '0'); // 01
-                    const day = String(now.getDate()).padStart(2, '0');        // 30
-                    const suffix = "?" + month + day; // ?0130
-
-                    // Combine Link + Suffix
+                    const month = String(now.getMonth() + 1).padStart(2, '0');
+                    const day = String(now.getDate()).padStart(2, '0');
+                    const suffix = "?" + month + day;
                     const finalLink = rawLink + suffix;
 
                     document.getElementById('directLink').value = finalLink;
@@ -137,21 +140,22 @@ app.get("/", (c) => {
   `);
 });
 
-// 2. Backend Logic (No changes needed, but included for completeness)
+// 2. Backend Logic
 app.post("/process", async (c) => {
   try {
     const body = await c.req.parseBody();
     let imageBuffer: ArrayBuffer | null = null;
     let originalSize = 0;
 
-    // --- Input Handling ---
     if (body['file'] && body['file'] instanceof File && body['file'].size > 0) {
        imageBuffer = await body['file'].arrayBuffer();
        originalSize = body['file'].size;
     } 
     else if (body['url'] && typeof body['url'] === 'string' && body['url'].trim() !== "") {
        try {
-           const resp = await fetch(body['url']);
+           const resp = await fetch(body['url'], {
+               headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" }
+           });
            if (!resp.ok) return c.json({ error: "Invalid URL" }, 400);
            imageBuffer = await resp.arrayBuffer();
            originalSize = imageBuffer.byteLength;
@@ -169,7 +173,6 @@ app.post("/process", async (c) => {
             const image = await Image.decode(new Uint8Array(imageBuffer));
             let quality = 80;
             const TARGET_MAX = 60 * 1024;
-            
             while (quality >= 10) {
                 const temp = await image.encodeJPEG(quality);
                 if (temp.byteLength <= TARGET_MAX) { processedData = temp; break; }
@@ -181,18 +184,32 @@ app.post("/process", async (c) => {
         }
     }
 
-    // --- UPLOAD (ADULT MODE) ---
+    // --- UPLOAD (Browser Spoofing Added) ---
     const formData = new FormData();
     formData.append("key", API_KEY);
-    formData.append("content", "1"); // Adult
+    formData.append("content", "1"); 
     formData.append("adult", "1");
-    formData.append("media", new Blob([processedData], { type: "image/jpeg" }), "upload.jpg");
+    formData.append("media", new Blob([processedData], { type: "image/jpeg" }), "image.jpg");
 
-    const tsResp = await fetch(API_URL, { method: "POST", body: formData });
+    // 🔥 ADDED USER-AGENT TO FAKE A BROWSER 🔥
+    const tsResp = await fetch(API_URL, { 
+        method: "POST", 
+        body: formData,
+        headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+    });
+
     const tsText = await tsResp.text();
     let tsResult;
-    try { tsResult = JSON.parse(tsText); } 
-    catch(e) { return c.json({ error: "Thumbsnap API Error" }, 502); }
+    
+    // Debugging Response
+    try { 
+        tsResult = JSON.parse(tsText); 
+    } catch(e) { 
+        // If it returns HTML (e.g. Cloudflare Error, Rate Limit), we show snippet
+        return c.json({ error: "Thumbsnap Raw Error: " + tsText.substring(0, 150) }, 502); 
+    }
 
     if (!tsResult.success) {
         return c.json({ error: tsResult.error?.message || "Upload Failed" }, 400);

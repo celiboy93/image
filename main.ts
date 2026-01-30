@@ -2,9 +2,12 @@ import { Hono } from "jsr:@hono/hono";
 import { Image } from "https://deno.land/x/imagescript@1.2.17/mod.ts";
 
 const app = new Hono();
-const SERVER_API_KEY = Deno.env.get("THUMBSNAP_KEY") || "";
 
-// 1. Frontend Interface
+// 🔥 အစ်ကို့ API Key ကို ဒီမှာ တခါတည်း ထည့်ပေးထားပါတယ် 🔥
+const API_KEY = "0004640d6fb420fbe95d270e65ab0ccb";
+// 🔥 Correct Endpoint from your docs 🔥
+const API_URL = "https://thumbsnap.com/api/upload";
+
 app.get("/", (c) => {
   return c.html(`
     <!DOCTYPE html>
@@ -12,76 +15,63 @@ app.get("/", (c) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Thumbsnap Uploader (Debug Mode)</title>
+        <title>Thumbsnap Uploader</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     </head>
-    <body class="bg-gray-900 min-h-screen flex items-center justify-center p-4">
-        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md border border-gray-700">
-            <h1 class="text-xl font-bold mb-6 text-center text-gray-800">
-                <i class="fa-solid fa-cloud-arrow-up text-red-500"></i> Adult Uploader
+    <body class="bg-slate-900 min-h-screen flex items-center justify-center p-4">
+        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md border border-slate-700">
+            <h1 class="text-xl font-bold mb-6 text-center text-slate-800">
+                <i class="fa-solid fa-cloud-arrow-up text-blue-600"></i> Thumbsnap Uploader
             </h1>
             
             <form id="uploadForm" class="space-y-4">
                 
-                <!-- Adult Selection -->
-                <div class="bg-red-50 p-3 rounded border border-red-200">
-                    <label class="block text-xs font-bold text-red-600 uppercase mb-2">Content Type</label>
-                    <div class="flex gap-4">
-                        <label class="flex items-center gap-2 cursor-pointer">
-                            <input type="radio" name="contentType" value="1" class="w-4 h-4 text-red-600" checked>
-                            <span class="text-sm font-bold text-gray-700">Adult (18+)</span>
-                        </label>
-                        <label class="flex items-center gap-2 cursor-pointer">
-                            <input type="radio" name="contentType" value="0" class="w-4 h-4 text-blue-600">
-                            <span class="text-sm font-bold text-gray-700">Family Safe</span>
-                        </label>
-                    </div>
-                </div>
-
                 <!-- Input -->
                 <div>
-                    <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Local File</label>
-                    <input type="file" name="file" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200 cursor-pointer">
+                    <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Select File</label>
+                    <input type="file" name="file" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
                 </div>
+                
                 <div class="text-center text-gray-300 text-xs">- OR -</div>
+                
                 <div>
-                    <input type="url" name="url" placeholder="Paste Remote URL" class="w-full px-3 py-2 border rounded text-sm">
+                    <input type="url" name="url" placeholder="Paste Remote Image URL" class="w-full px-3 py-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                 </div>
 
-                <!-- API Key -->
-                <div class="pt-2">
-                    <input type="password" name="apiKey" id="apiKeyInput" placeholder="Thumbsnap API Key" class="w-full px-3 py-2 border rounded bg-gray-50 text-sm">
+                <!-- API Key Info (Read Only) -->
+                <div class="bg-green-50 p-2 rounded border border-green-200 text-center">
+                    <p class="text-[10px] text-green-700 font-bold">
+                        <i class="fa-solid fa-check-circle"></i> API Key Active: ...0ccb
+                    </p>
                 </div>
 
-                <button type="submit" class="w-full bg-gray-800 text-white py-3 rounded-lg hover:bg-black transition font-bold shadow-lg mt-2">
-                    Start Upload
+                <button type="submit" class="w-full bg-slate-800 text-white py-3 rounded-lg hover:bg-black transition font-bold shadow-lg mt-2">
+                    Upload Now
                 </button>
             </form>
 
             <div id="loading" class="hidden mt-6 text-center">
-                <div class="animate-spin inline-block w-8 h-8 border-4 border-red-500 border-t-transparent rounded-full mb-2"></div>
-                <p class="text-xs text-red-600 animate-pulse font-bold">Processing...</p>
+                <div class="animate-spin inline-block w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full mb-2"></div>
+                <p class="text-xs text-blue-600 animate-pulse font-bold">Compressing & Uploading...</p>
             </div>
 
             <div id="error" class="hidden mt-4 p-3 bg-red-100 text-red-600 text-xs rounded border border-red-200 break-words font-mono"></div>
 
-            <div id="resultArea" class="hidden mt-6 bg-gray-50 p-4 rounded-lg border text-center">
+            <div id="resultArea" class="hidden mt-6 bg-slate-50 p-4 rounded-lg border text-center">
                 <div class="flex gap-2 mb-2">
                     <input id="tsLink" readonly class="flex-1 text-sm bg-white border border-gray-300 p-2 rounded text-gray-700 select-all font-mono" />
                     <button onclick="copyLink()" class="bg-gray-200 px-3 py-1 rounded text-sm font-bold">Copy</button>
+                </div>
+                <div class="flex gap-2 mb-2">
+                    <input id="tsDirect" readonly class="flex-1 text-[10px] bg-white border border-gray-300 p-2 rounded text-gray-500 select-all font-mono" />
+                    <span class="text-[10px] self-center text-gray-400">Direct</span>
                 </div>
                 <img id="previewThumb" class="w-full h-40 object-contain rounded border bg-white mt-2" />
             </div>
         </div>
 
         <script>
-            const apiKeyInput = document.getElementById('apiKeyInput');
-            if(!apiKeyInput.placeholder.includes('Server')) {
-                 apiKeyInput.value = localStorage.getItem('ts_api_key') || '';
-            }
-            apiKeyInput.addEventListener('change', () => localStorage.setItem('ts_api_key', apiKeyInput.value));
-
             const form = document.getElementById('uploadForm');
             const resultArea = document.getElementById('resultArea');
             const loading = document.getElementById('loading');
@@ -97,23 +87,23 @@ app.get("/", (c) => {
 
                 try {
                     const response = await fetch('/process', { method: 'POST', body: formData });
-                    
-                    // 🔥 FIX: Read as Text first to catch HTML errors
-                    const textData = await response.text();
+                    const textData = await response.text(); // Raw text first
                     
                     let data;
                     try {
                         data = JSON.parse(textData);
                     } catch(e) {
-                        // If JSON parse fails, show the HTML preview (Server Error)
-                        console.error("Server HTML:", textData);
-                        throw new Error("Server Error (Not JSON): " + textData.substring(0, 150) + "..."); 
+                        console.error(textData);
+                        throw new Error("Server Error: " + textData.substring(0, 100));
                     }
 
                     if(data.error) throw new Error(data.error);
 
-                    document.getElementById('tsLink').value = data.data.media;
-                    document.getElementById('previewThumb').src = data.data.media;
+                    // Docs say: data.data.url (Page), data.data.media (Direct Image)
+                    document.getElementById('tsLink').value = data.data.url; 
+                    document.getElementById('tsDirect').value = data.data.media;
+                    document.getElementById('previewThumb').src = data.data.thumb;
+                    
                     resultArea.classList.remove('hidden');
 
                 } catch (err) {
@@ -135,102 +125,86 @@ app.get("/", (c) => {
   `);
 });
 
-// 2. Backend Logic with Better Error Handling
+// 2. Backend Logic
 app.post("/process", async (c) => {
   try {
     const body = await c.req.parseBody();
     let imageBuffer: ArrayBuffer | null = null;
     let originalSize = 0;
     
-    const apiKey = (body['apiKey'] as string) || SERVER_API_KEY;
-    const contentType = (body['contentType'] as string) || "0";
-
     // --- Input Handling ---
-    if (body['file'] && body['file'] instanceof File) {
-       if (body['file'].size === 0) return c.json({ error: "File is empty" }, 400);
+    if (body['file'] && body['file'] instanceof File && body['file'].size > 0) {
        imageBuffer = await body['file'].arrayBuffer();
        originalSize = body['file'].size;
     } 
-    else if (body['url'] && typeof body['url'] === 'string') {
+    else if (body['url'] && typeof body['url'] === 'string' && body['url'].trim() !== "") {
        try {
            const resp = await fetch(body['url']);
-           if (!resp.ok) return c.json({ error: `Cannot download URL (Status: ${resp.status})` }, 400);
+           if (!resp.ok) return c.json({ error: "Invalid URL" }, 400);
            imageBuffer = await resp.arrayBuffer();
            originalSize = imageBuffer.byteLength;
        } catch(e) {
-           return c.json({ error: "Invalid URL: " + e.message }, 400);
+           return c.json({ error: "Fetch Error: " + e.message }, 400);
        }
     } else {
-       return c.json({ error: "No file or URL selected" }, 400);
+       return c.json({ error: "Please select a file" }, 400);
     }
 
-    if (!imageBuffer) return c.json({ error: "Image buffer is null" }, 400);
-
-    // --- Compression ---
-    const TARGET_MAX = 60 * 1024; // 60KB
+    // --- Compression (Target < 60KB) ---
+    // If < 50KB, use original. If > 50KB, compress.
     let processedData = new Uint8Array(imageBuffer);
-
-    // Try Catch for Image Decoding (Common Crash Point)
-    try {
-        if (originalSize > 50 * 1024) {
+    
+    if (originalSize > 50 * 1024) {
+        try {
             const image = await Image.decode(new Uint8Array(imageBuffer));
             let quality = 80;
-            
-            // Loop reduction
+            const TARGET_MAX = 60 * 1024;
+
             while (quality >= 10) {
                 const temp = await image.encodeJPEG(quality);
                 if (temp.byteLength <= TARGET_MAX) {
                     processedData = temp;
                     break;
                 }
-                processedData = temp; // Keep smallest so far
+                processedData = temp;
                 quality -= 10;
             }
+        } catch (e) {
+            console.error("Compression failed, using original", e);
+            // If compression fails (unsupported format), we stick with original
         }
-    } catch (e) {
-        // Fallback: If decoding fails (e.g. unsupported format), try uploading original
-        console.error("Compression Failed:", e);
-        // We will proceed with original file if compression fails
-        processedData = new Uint8Array(imageBuffer);
     }
 
-    // --- Upload to Thumbsnap ---
-    if (!apiKey) return c.json({ error: "API Key is missing" }, 400);
-
+    // --- UPLOAD TO THUMBSNAP ---
+    // Docs: POST multipart/form-data, fields: key, media
     const formData = new FormData();
-    formData.append("key", apiKey);
-    if(contentType === '1') {
-         formData.append("content", "1"); 
-         formData.append("adult", "1");
-    }
-    formData.append("media", new Blob([processedData], { type: "image/jpeg" }), "image.jpg");
+    formData.append("key", API_KEY);
+    formData.append("media", new Blob([processedData], { type: "image/jpeg" }), "upload.jpg");
 
-    const tsResp = await fetch("https://thumbsnap.com/api/tool/upload", { 
+    // 🔥 Using correct URL: https://thumbsnap.com/api/upload 🔥
+    const tsResp = await fetch(API_URL, { 
         method: "POST", 
         body: formData 
     });
     
-    // Check if Thumbsnap itself returned HTML (Maintenance/Error)
     const tsText = await tsResp.text();
     let tsResult;
     try {
         tsResult = JSON.parse(tsText);
     } catch(e) {
-        return c.json({ error: "Thumbsnap API Error (Not JSON): " + tsText.substring(0, 100) }, 502);
+        return c.json({ error: "Thumbsnap Bad Response: " + tsText }, 500);
     }
 
     if (!tsResult.success) {
-        return c.json({ error: "Thumbsnap Failed: " + (tsResult.error?.message || JSON.stringify(tsResult)) }, 400);
+        return c.json({ error: "Thumbsnap API Error: " + (tsResult.error?.message || "Unknown") }, 400);
     }
 
     return c.json({
         success: true,
-        data: tsResult.data,
-        meta: { originalSize, newSize: processedData.byteLength }
+        data: tsResult.data // Contains .url, .media, .thumb
     });
 
   } catch (globalErr) {
-    // Catch-all for server crashes
     return c.json({ error: "System Error: " + globalErr.message }, 500);
   }
 });

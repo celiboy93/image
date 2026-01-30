@@ -1,5 +1,4 @@
 import { Hono } from "jsr:@hono/hono";
-import { Image } from "https://deno.land/x/imagescript@1.2.17/mod.ts";
 
 const app = new Hono();
 
@@ -7,6 +6,21 @@ const app = new Hono();
 const API_KEY = "0004640d6fb420fbe95d270e65ab0ccb"; 
 const API_URL = "https://thumbsnap.com/api/upload";
 
+// --- 1. Proxy Helper (Remote URL တွေကို Frontend မှာ compress လုပ်နိုင်ဖို့) ---
+app.get("/proxy", async (c) => {
+  const url = c.req.query("url");
+  if (!url) return c.text("Missing URL", 400);
+  try {
+    const resp = await fetch(url, {
+       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+    });
+    return new Response(resp.body, { 
+        headers: { "Content-Type": resp.headers.get("Content-Type") || "image/jpeg" } 
+    });
+  } catch (e) { return c.text("Error fetching url", 500); }
+});
+
+// --- 2. Main UI ---
 app.get("/", (c) => {
   return c.html(`
     <!DOCTYPE html>
@@ -14,7 +28,7 @@ app.get("/", (c) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Smart Thumbsnap Uploader</title>
+        <title>Smart Thumbsnap Uploader (Canvas Edition)</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     </head>
@@ -29,27 +43,37 @@ app.get("/", (c) => {
                 <i class="fa-solid fa-wand-magic-sparkles text-purple-500 mr-2"></i> Smart Uploader
             </h1>
             
-            <form id="uploadForm" class="space-y-5">
-                <div class="border-2 border-dashed border-purple-300 rounded-lg p-6 hover:bg-purple-50 transition text-center cursor-pointer relative group">
-                    <input type="file" name="file" accept="image/*" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10">
+            <!-- Upload Form -->
+            <div class="space-y-5">
+                <!-- File Input -->
+                <div class="border-2 border-dashed border-purple-300 rounded-lg p-6 hover:bg-purple-50 transition text-center cursor-pointer relative group" onclick="document.getElementById('fileInput').click()">
+                    <input type="file" id="fileInput" accept="image/*" class="hidden">
                     <i class="fa-solid fa-image text-3xl text-purple-400 mb-2 group-hover:text-purple-600 transition"></i>
                     <p class="text-xs font-bold text-slate-500 uppercase group-hover:text-purple-700">Choose Image</p>
                 </div>
 
                 <div class="text-center text-slate-300 text-xs font-bold">- OR -</div>
 
-                <div>
-                    <input type="url" name="url" placeholder="Paste Image URL..." class="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm">
+                <!-- URL Input -->
+                <div class="flex gap-2">
+                    <input type="url" id="urlInput" placeholder="Paste Image URL..." class="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm">
+                    <button onclick="fetchUrl()" class="bg-slate-700 text-white px-4 rounded-lg font-bold text-xs">FETCH</button>
                 </div>
 
-                <button type="submit" class="w-full bg-slate-800 text-white py-3.5 rounded-lg hover:bg-black transition font-bold shadow-lg">
-                    UPLOAD (High Quality)
-                </button>
-            </form>
+                <!-- Preview Area (Before Upload) -->
+                <div id="preUploadPreview" class="hidden text-center bg-slate-100 p-3 rounded-lg">
+                    <p id="sizeMsg" class="text-[10px] font-bold text-slate-500 mb-2"></p>
+                    <img id="imgPreview" class="h-32 mx-auto rounded border border-slate-300 shadow-sm object-contain">
+                    <button id="uploadBtn" class="w-full bg-purple-600 text-white py-3 mt-3 rounded-lg hover:bg-purple-700 transition font-bold shadow-lg">
+                        UPLOAD TO THUMBSNAP 🚀
+                    </button>
+                </div>
+            </div>
 
+            <!-- Loading State -->
             <div id="loading" class="hidden mt-8 text-center">
                 <div class="animate-spin inline-block w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full mb-3"></div>
-                <p class="text-xs text-purple-600 animate-pulse font-bold tracking-widest">OPTIMIZING & UPLOADING...</p>
+                <p class="text-xs text-purple-600 animate-pulse font-bold tracking-widest">UPLOADING...</p>
             </div>
 
             <div id="error" class="hidden mt-4 p-3 bg-red-100 text-red-600 text-xs rounded border border-red-200 text-center font-bold"></div>
@@ -64,11 +88,6 @@ app.get("/", (c) => {
                         <input id="directLink" readonly class="flex-1 text-sm bg-white border border-slate-300 p-2 rounded text-purple-700 font-mono font-bold select-all focus:border-purple-500 outline-none text-xs" />
                         <button onclick="copyLink()" class="bg-white border border-slate-300 hover:bg-slate-100 px-3 py-2 rounded text-xs font-bold text-slate-700"><i class="fa-regular fa-copy"></i></button>
                     </div>
-
-                    <div class="mt-3 text-center">
-                        <p class="text-[10px] text-gray-400 mb-2">Preview:</p>
-                        <img id="previewImg" class="w-full h-40 object-contain rounded bg-white border border-slate-200" />
-                    </div>
                 </div>
                 
                 <div class="text-center mt-4">
@@ -78,49 +97,120 @@ app.get("/", (c) => {
         </div>
 
         <script>
-            const form = document.getElementById('uploadForm');
-            const resultArea = document.getElementById('resultArea');
+            let currFile = null;
             const loading = document.getElementById('loading');
             const errorDiv = document.getElementById('error');
+            const resultArea = document.getElementById('resultArea');
+            const preUploadPreview = document.getElementById('preUploadPreview');
+            const uploadBtn = document.getElementById('uploadBtn');
 
-            form.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                resultArea.classList.add('hidden');
-                errorDiv.classList.add('hidden');
+            // --- 1. File Selection Logic ---
+            document.getElementById('fileInput').addEventListener('change', (e) => {
+                if(e.target.files[0]) processFile(e.target.files[0]);
+            });
+
+            async function fetchUrl() {
+                const u = document.getElementById('urlInput').value;
+                if(!u) return;
                 loading.classList.remove('hidden');
+                loading.querySelector('p').innerText = "FETCHING IMAGE...";
+                try {
+                    // Call our Proxy to get the image as a blob
+                    const res = await fetch('/proxy?url='+encodeURIComponent(u));
+                    if(!res.ok) throw new Error("Failed to fetch image");
+                    const blob = await res.blob();
+                    processFile(new File([blob], "remote_image.jpg", { type: blob.type }));
+                } catch(e) { 
+                    alert("Cannot fetch URL. Try downloading it first."); 
+                } finally {
+                    loading.classList.add('hidden');
+                }
+            }
 
-                const formData = new FormData(form);
+            // --- 2. Compression Logic (Matches Supabase Code) ---
+            async function processFile(f) {
+                loading.classList.remove('hidden');
+                loading.querySelector('p').innerText = "OPTIMIZING...";
+                
+                let msg = \`Original: \${(f.size/1024).toFixed(1)} KB\`;
+                
+                // Compress if > 70KB (Limit from Supabase code logic)
+                if(f.size > 71680) { 
+                    try {
+                        currFile = await compress(f, 0.6); // Quality 0.6 (Standard Canvas compression)
+                        msg += \` ➝ Compressed: \${(currFile.size/1024).toFixed(1)} KB\`;
+                    } catch(e) {
+                        console.error(e);
+                        currFile = f; // Fallback
+                    }
+                } else {
+                    currFile = f;
+                }
+
+                document.getElementById('sizeMsg').innerHTML = msg;
+                document.getElementById('imgPreview').src = URL.createObjectURL(currFile);
+                
+                loading.classList.add('hidden');
+                preUploadPreview.classList.remove('hidden');
+                resultArea.classList.add('hidden');
+            }
+
+            // The Canvas Compressor Function
+            function compress(file, quality) {
+                return new Promise((resolve, reject) => {
+                    const img = document.createElement('img');
+                    img.src = URL.createObjectURL(file);
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Keep original dimensions (prevents pixelation from bad resizing)
+                        canvas.width = img.width; 
+                        canvas.height = img.height;
+                        
+                        // Draw with default browser smoothing
+                        ctx.drawImage(img, 0, 0, img.width, img.height);
+                        
+                        // Output as JPEG with defined quality
+                        canvas.toBlob(blob => {
+                            if(!blob) reject("Compression failed");
+                            resolve(new File([blob], file.name, { type: "image/jpeg" }));
+                        }, 'image/jpeg', quality); 
+                    };
+                    img.onerror = reject;
+                });
+            }
+
+            // --- 3. Upload Logic ---
+            uploadBtn.addEventListener('click', async () => {
+                if(!currFile) return;
+
+                preUploadPreview.classList.add('hidden');
+                loading.classList.remove('hidden');
+                loading.querySelector('p').innerText = "UPLOADING TO THUMBSNAP...";
+                errorDiv.classList.add('hidden');
+
+                const formData = new FormData();
+                formData.append('file', currFile);
 
                 try {
                     const response = await fetch('/process', { method: 'POST', body: formData });
-                    const textData = await response.text(); 
-                    
-                    let data;
-                    try { 
-                        data = JSON.parse(textData); 
-                    } catch(e) { 
-                        console.error("Raw:", textData);
-                        throw new Error("SERVER ERROR: " + textData.substring(0, 150)); 
-                    }
+                    const data = await response.json();
 
                     if(data.error) throw new Error(data.error);
 
-                    // --- DATE FIX ---
+                    // Date fix for link
                     const rawLink = data.data.media;
                     const now = new Date();
-                    const month = String(now.getMonth() + 1).padStart(2, '0');
-                    const day = String(now.getDate()).padStart(2, '0');
-                    const suffix = "?" + month + day;
-                    const finalLink = rawLink + suffix;
-
-                    document.getElementById('directLink').value = finalLink;
-                    document.getElementById('previewImg').src = finalLink;
+                    const suffix = "?" + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
                     
+                    document.getElementById('directLink').value = rawLink + suffix;
                     resultArea.classList.remove('hidden');
 
                 } catch (err) {
                     errorDiv.innerText = err.message;
                     errorDiv.classList.remove('hidden');
+                    preUploadPreview.classList.remove('hidden');
                 } finally {
                     loading.classList.add('hidden');
                 }
@@ -137,83 +227,25 @@ app.get("/", (c) => {
   `);
 });
 
-// 2. Backend Logic (SMART RESIZE & COMPRESS)
+// --- 3. Backend Logic (Simplified - Just Uploads) ---
 app.post("/process", async (c) => {
   try {
     const body = await c.req.parseBody();
-    let imageBuffer: ArrayBuffer | null = null;
-    let originalSize = 0;
+    const file = body['file'];
 
-    // --- Input Handling ---
-    if (body['file'] && body['file'] instanceof File && body['file'].size > 0) {
-       imageBuffer = await body['file'].arrayBuffer();
-       originalSize = body['file'].size;
-    } 
-    else if (body['url'] && typeof body['url'] === 'string' && body['url'].trim() !== "") {
-       try {
-           const resp = await fetch(body['url'], {
-               headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36" }
-           });
-           if (!resp.ok) return c.json({ error: "Invalid URL" }, 400);
-           imageBuffer = await resp.arrayBuffer();
-           originalSize = imageBuffer.byteLength;
-       } catch(e) { return c.json({ error: "Fetch Error" }, 400); }
-    } else {
-       return c.json({ error: "Please select an image" }, 400);
+    if (!file || !(file instanceof File)) {
+        return c.json({ error: "No file received" }, 400);
     }
 
-    // --- 🔥 SMART COMPRESSION LOGIC 🔥 ---
-    let processedData = new Uint8Array(imageBuffer);
-    const TARGET_SIZE = 60 * 1024; // 60KB
+    // Convert File to Blob for FormData
+    const fileBlob = new Blob([await file.arrayBuffer()], { type: file.type });
 
-    if (originalSize > 50 * 1024) {
-        try {
-            const image = await Image.decode(new Uint8Array(imageBuffer));
-            
-            // Step 1: Resize if too big (This prevents blocky artifacts)
-            // A 4000px image at low quality looks bad. A 1000px image at high quality looks good.
-            const MAX_WIDTH = 1000;
-            if (image.width > MAX_WIDTH) {
-                // Calculate new height to maintain aspect ratio
-                const ratio = MAX_WIDTH / image.width;
-                const newHeight = Math.round(image.height * ratio);
-                image.resize(MAX_WIDTH, newHeight);
-            }
-
-            // Step 2: Try High Quality first
-            let quality = 85;
-            let temp = await image.encodeJPEG(quality);
-
-            // Step 3: Loop if still too big
-            while (temp.byteLength > TARGET_SIZE && quality > 30) {
-                // Reduce quality slightly
-                quality -= 10;
-                temp = await image.encodeJPEG(quality);
-                
-                // If quality is getting too low (< 50) and size is still big, 
-                // resize dimensions down a bit more instead of ruining quality
-                if (quality < 50 && temp.byteLength > TARGET_SIZE) {
-                    const newW = Math.round(image.width * 0.8); // Reduce width by 20%
-                    const newH = Math.round(image.height * 0.8);
-                    image.resize(newW, newH);
-                    quality = 80; // Reset quality to high for new smaller size
-                    temp = await image.encodeJPEG(quality);
-                }
-            }
-            
-            processedData = temp;
-
-        } catch (e) {
-            console.error("Smart compress failed, using original:", e);
-        }
-    }
-
-    // --- UPLOAD TO THUMBSNAP ---
+    // Send DIRECTLY to Thumbsnap (File is already compressed by Frontend)
     const formData = new FormData();
     formData.append("key", API_KEY);
     formData.append("content", "1"); 
     formData.append("adult", "1");
-    formData.append("media", new Blob([processedData], { type: "image/jpeg" }), "image.jpg");
+    formData.append("media", fileBlob, "image.jpg");
 
     const tsResp = await fetch(API_URL, { 
         method: "POST", 
@@ -221,13 +253,10 @@ app.post("/process", async (c) => {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36" }
     });
 
-    const tsText = await tsResp.text();
-    let tsResult;
-    try { tsResult = JSON.parse(tsText); } 
-    catch(e) { return c.json({ error: "Thumbsnap Error: " + tsText.substring(0, 100) }, 502); }
+    const tsResult = await tsResp.json();
 
     if (!tsResult.success) {
-        return c.json({ error: tsResult.error?.message || "Upload Failed" }, 400);
+        return c.json({ error: tsResult.error?.message || "Thumbsnap Upload Failed" }, 400);
     }
 
     return c.json({ success: true, data: tsResult.data });

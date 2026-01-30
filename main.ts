@@ -1,238 +1,430 @@
-import { Hono } from "jsr:@hono/hono";
+import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
-const app = new Hono();
+// 🔥 Configuration
+const THUMBSNAP_KEY = "0004640d6fb420fbe95d270e65ab0ccb"; 
+const TG_BOT_TOKEN = Deno.env.get("TG_BOT_TOKEN") || ""; 
+const TG_CHAT_ID = Deno.env.get("TG_CHAT_ID") || ""; 
 
-// 🔥 API Configuration
-const API_KEY = "0004640d6fb420fbe95d270e65ab0ccb"; 
-const API_URL = "https://thumbsnap.com/api/upload";
+// 🏦 Deno KV Database (Supabase DB အစားထိုး)
+const kv = await Deno.openKv();
 
-// --- 1. Proxy Helper ---
-app.get("/proxy", async (c) => {
-  const url = c.req.query("url");
-  if (!url) return c.text("Missing URL", 400);
-  try {
-    const resp = await fetch(url, {
-       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+serve(async (req) => {
+  const url = new URL(req.url);
+
+  // --- 1. Proxy (For Remote URLs) ---
+  if (url.pathname === "/proxy") {
+    const targetUrl = url.searchParams.get("url");
+    if (!targetUrl) return new Response("Missing URL", { status: 400 });
+    try {
+      const resp = await fetch(targetUrl);
+      return new Response(resp.body, { headers: { "Content-Type": resp.headers.get("Content-Type") || "image/jpeg" }});
+    } catch (e) { return new Response("Error", { status: 500 }); }
+  }
+
+  // --- 2. Upload API (Thumbsnap + Save History to KV) ---
+  if (req.method === "POST" && url.pathname === "/upload") {
+    try {
+      const formData = await req.formData();
+      const file = formData.get("file") as File;
+      if (!file) return new Response("No file", { status: 400 });
+
+      // Upload to Thumbsnap
+      const tsData = new FormData();
+      tsData.append("key", THUMBSNAP_KEY);
+      tsData.append("media", file);
+      tsData.append("adult", "1"); // 18+ ON
+
+      const tsRes = await fetch("https://thumbsnap.com/api/upload", { method: "POST", body: tsData });
+      const tsJson = await tsRes.json();
+
+      if (!tsJson.success) throw new Error(tsJson.error?.message || "Upload Failed");
+
+      const publicUrl = tsJson.data.media;
+      
+      // Save to History (Deno KV)
+      const id = Date.now().toString();
+      const historyItem = { id, public_url: publicUrl, file_name: file.name, created_at: new Date().toISOString() };
+      await kv.set(["history", id], historyItem);
+
+      return new Response(JSON.stringify({ url: publicUrl }), { headers: { "Content-Type": "application/json" } });
+    } catch (err) { return new Response(JSON.stringify({ error: err.message }), { status: 500 }); }
+  }
+
+  // --- 3. Draft/Queue APIs (Using Deno KV) ---
+  if (req.method === "POST" && url.pathname === "/draft/save") {
+    const body = await req.json();
+    const id = Date.now().toString();
+    const draftItem = { id, image_url: body.url, caption: body.caption, created_at: new Date().toISOString() };
+    await kv.set(["drafts", id], draftItem);
+    return new Response(JSON.stringify({ success: true }));
+  }
+
+  if (req.method === "GET" && url.pathname === "/draft/list") {
+    const items = [];
+    for await (const entry of kv.list({ prefix: ["drafts"] })) {
+      items.push(entry.value);
+    }
+    // Sort by created_at (Oldest first)
+    items.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    return new Response(JSON.stringify({ items }));
+  }
+
+  if (req.method === "POST" && url.pathname === "/draft/delete") {
+    const body = await req.json();
+    await kv.delete(["drafts", body.id]);
+    return new Response(JSON.stringify({ success: true }));
+  }
+
+  if (req.method === "POST" && url.pathname === "/draft/send") {
+    const body = await req.json();
+    const tgUrl = `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto`;
+    
+    await fetch(tgUrl, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: TG_CHAT_ID, photo: body.image_url, caption: body.caption, parse_mode: "HTML" })
     });
-    return new Response(resp.body, { 
-        headers: { "Content-Type": resp.headers.get("Content-Type") || "image/jpeg" } 
-    });
-  } catch (e) { return c.text("Error fetching url", 500); }
-});
+    
+    // Delete after sending
+    await kv.delete(["drafts", body.id]);
+    return new Response(JSON.stringify({ success: true }));
+  }
 
-// --- 2. Main UI ---
-app.get("/", (c) => {
-  return c.html(`
+  // --- 4. History APIs ---
+  if (req.method === "GET" && url.pathname === "/history/list") {
+    const items = [];
+    // Fetch last 50 items (KV list logic)
+    for await (const entry of kv.list({ prefix: ["history"] }, { limit: 50, reverse: true })) {
+      items.push(entry.value);
+    }
+    return new Response(JSON.stringify({ items }));
+  }
+
+  if (req.method === "POST" && url.pathname === "/history/delete") {
+    const body = await req.json();
+    await kv.delete(["history", body.id]);
+    return new Response(JSON.stringify({ success: true }));
+  }
+
+  // --- Frontend UI (Original UI + Smart Compressor) ---
+  return new Response(`
     <!DOCTYPE html>
     <html lang="en">
     <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Thumbsnap 60KB Fix</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Thumbsnap Admin X</title>
+      <style>
+        :root { --primary: #6366f1; --bg: #f8fafc; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); padding: 15px; max-width: 600px; margin: 0 auto; color: #334155; }
+        
+        /* Navigation Tabs */
+        .nav { display: flex; background: #e2e8f0; padding: 4px; border-radius: 10px; margin-bottom: 20px; }
+        .nav-item { flex: 1; padding: 10px; text-align: center; cursor: pointer; border-radius: 8px; font-weight: 600; font-size: 14px; color: #64748b; transition: 0.2s; }
+        .nav-item.active { background: white; color: var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        
+        .view { display: none; animation: fadeIn 0.3s; }
+        .view.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Card Style */
+        .card { background: white; padding: 20px; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        
+        /* Upload Section */
+        .sub-tabs { display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; }
+        .sub-tab { font-size: 13px; font-weight: 600; cursor: pointer; color: #94a3b8; padding: 5px 0; }
+        .sub-tab.active { color: var(--primary); border-bottom: 2px solid var(--primary); }
+        
+        .inp-area { display: none; } .inp-area.active { display: block; }
+        
+        .upload-zone { border: 2px dashed #cbd5e1; border-radius: 12px; padding: 30px; text-align: center; cursor: pointer; background: #f8fafc; color: #64748b; margin-top: 10px; }
+        .upload-zone:active { border-color: var(--primary); background: #eef2ff; color: var(--primary); }
+
+        input, textarea { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; margin-top: 8px; box-sizing: border-box; font-family: inherit; }
+        input:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1); }
+
+        .btn { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-top: 15px; font-size: 15px; }
+        .btn:disabled { opacity: 0.7; cursor: wait; }
+        
+        /* List Items */
+        .list-container { min-height: 100px; }
+        .item { display: flex; gap: 12px; padding: 12px; border: 1px solid #f1f5f9; border-radius: 10px; margin-bottom: 10px; background: white; align-items: center; }
+        .thumb { width: 60px; height: 60px; object-fit: cover; border-radius: 6px; background: #eee; border: 1px solid #e2e8f0; }
+        .info { flex: 1; overflow: hidden; }
+        .caption { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .meta { font-size: 12px; color: #94a3b8; margin-top: 3px; }
+        .actions { display: flex; flex-direction: column; gap: 6px; }
+        .btn-sm { padding: 6px 10px; border: none; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer; color: white; min-width: 50px; }
+        
+        #previewBox { display: none; text-align: center; margin-top: 20px; }
+        #previewImg { max-height: 180px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        #resultBox { display: none; margin-top: 20px; padding-top: 15px; border-top: 1px solid #e2e8f0; }
+      </style>
     </head>
-    <body class="bg-slate-900 min-h-screen flex items-center justify-center p-4">
-        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md border border-slate-700 relative overflow-hidden">
-            
-            <div class="absolute top-0 right-0 bg-red-600 text-white text-[10px] font-bold px-3 py-1 rounded-bl-lg z-10 shadow-md">
-                18+ ADULT
+    <body>
+
+      <div class="nav">
+        <div class="nav-item active" onclick="setView('upload')">1. Upload</div>
+        <div class="nav-item" onclick="setView('queue')">2. Queue</div>
+        <div class="nav-item" onclick="setView('history')">3. History</div>
+      </div>
+
+      <div id="view-upload" class="view active">
+        <div class="card">
+          <div class="sub-tabs">
+            <div class="sub-tab active" onclick="setInp('file')">FILE UPLOAD</div>
+            <div class="sub-tab" style="margin-left:15px;" onclick="setInp('url')">REMOTE URL</div>
+          </div>
+
+          <div id="inp-file" class="inp-area active">
+            <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
+              📸 Tap to Select Image
             </div>
+            <input type="file" id="fileInput" accept="image/*" style="display:none">
+          </div>
 
-            <h1 class="text-xl font-bold mb-6 text-center text-slate-800 mt-2">
-                <i class="fa-solid fa-compress text-purple-500 mr-2"></i> 60KB Compressor
-            </h1>
-            
-            <div class="space-y-5">
-                <!-- File Input -->
-                <div class="border-2 border-dashed border-purple-300 rounded-lg p-6 hover:bg-purple-50 transition text-center cursor-pointer relative group" onclick="document.getElementById('fileInput').click()">
-                    <input type="file" id="fileInput" accept="image/*" class="hidden">
-                    <i class="fa-solid fa-image text-3xl text-purple-400 mb-2 group-hover:text-purple-600 transition"></i>
-                    <p class="text-xs font-bold text-slate-500 uppercase group-hover:text-purple-700">Choose Image</p>
-                </div>
+          <div id="inp-url" class="inp-area">
+             <input type="text" id="urlInput" placeholder="Paste image URL here...">
+             <button class="btn" style="background:#475569; margin-top:10px;" onclick="fetchUrl()">Fetch Image</button>
+          </div>
 
-                <div class="text-center text-slate-300 text-xs font-bold">- OR -</div>
+          <div id="previewBox">
+             <div id="sizeMsg" style="font-size:12px; color:#64748b; margin-bottom:8px;"></div>
+             <img id="previewImg">
+             <button class="btn" id="uploadBtn">Upload to Thumbsnap 🚀</button>
+          </div>
 
-                <!-- URL Input -->
-                <div class="flex gap-2">
-                    <input type="url" id="urlInput" placeholder="Paste Image URL..." class="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm">
-                    <button onclick="fetchUrl()" class="bg-slate-700 text-white px-4 rounded-lg font-bold text-xs">FETCH</button>
-                </div>
-
-                <!-- Preview Area -->
-                <div id="preUploadPreview" class="hidden text-center bg-slate-100 p-3 rounded-lg">
-                    <p id="sizeMsg" class="text-[11px] font-bold text-slate-600 mb-2 leading-relaxed"></p>
-                    <img id="imgPreview" class="h-32 mx-auto rounded border border-slate-300 shadow-sm object-contain">
-                    <button id="uploadBtn" class="w-full bg-purple-600 text-white py-3 mt-3 rounded-lg hover:bg-purple-700 transition font-bold shadow-lg">
-                        UPLOAD TO THUMBSNAP 🚀
-                    </button>
-                </div>
-            </div>
-
-            <!-- Loading -->
-            <div id="loading" class="hidden mt-8 text-center">
-                <div class="animate-spin inline-block w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full mb-3"></div>
-                <p id="loadingText" class="text-xs text-purple-600 animate-pulse font-bold tracking-widest">PROCESSING...</p>
-            </div>
-
-            <div id="error" class="hidden mt-4 p-3 bg-red-100 text-red-600 text-xs rounded border border-red-200 text-center font-bold"></div>
-
-            <!-- Result -->
-            <div id="resultArea" class="hidden mt-6">
-                <div class="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                    <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">Direct Link</label>
-                    <div class="flex gap-2">
-                        <input id="directLink" readonly class="flex-1 text-sm bg-white border border-slate-300 p-2 rounded text-purple-700 font-mono font-bold select-all focus:border-purple-500 outline-none text-xs" />
-                        <button onclick="copyLink()" class="bg-white border border-slate-300 hover:bg-slate-100 px-3 py-2 rounded text-xs font-bold text-slate-700"><i class="fa-regular fa-copy"></i></button>
-                    </div>
-                </div>
-                <div class="text-center mt-4">
-                    <button onclick="window.location.reload()" class="text-xs text-slate-400 hover:text-purple-500 underline">Upload Another</button>
-                </div>
-            </div>
+          <div id="resultBox">
+             <label style="font-size:12px; font-weight:bold; color:#059669;">DIRECT LINK:</label>
+             <div style="display:flex; gap:5px;">
+               <input type="text" id="directLink" readonly onclick="this.select()" style="margin-top:0;">
+               <button onclick="copyLink()" style="background:#059669; color:white; border:none; border-radius:8px; padding:0 12px; cursor:pointer;">Copy</button>
+             </div>
+             
+             <div style="margin-top:20px; background:#f0fdf4; padding:15px; border-radius:10px; border:1px solid #bbf7d0;">
+               <label style="font-size:12px; font-weight:bold; color:#15803d;">ADD TO QUEUE:</label>
+               <textarea id="caption" rows="2" placeholder="Movie Title / Caption..."></textarea>
+               <button class="btn" style="background:#15803d; margin-top:8px;" onclick="saveDraft()">Save Draft 📥</button>
+             </div>
+          </div>
         </div>
+      </div>
 
-        <script>
-            let currFile = null;
-            const loading = document.getElementById('loading');
-            const loadingText = document.getElementById('loadingText');
-            const preUploadPreview = document.getElementById('preUploadPreview');
-            const sizeMsg = document.getElementById('sizeMsg');
+      <div id="view-queue" class="view">
+        <div class="card">
+           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+             <b style="color:#0f172a;">Pending Posts</b>
+             <button onclick="sendAll()" style="background:#0f172a; color:white; border:none; padding:8px 12px; border-radius:6px; font-size:12px; font-weight:bold; cursor:pointer;">Send ALL 🚀</button>
+           </div>
+           <div id="queueList" class="list-container">Loading...</div>
+        </div>
+      </div>
 
-            document.getElementById('fileInput').addEventListener('change', (e) => {
-                if(e.target.files[0]) processFile(e.target.files[0]);
-            });
+      <div id="view-history" class="view">
+        <div class="card">
+           <b style="color:#0f172a; display:block; margin-bottom:15px;">Upload History</b>
+           <div id="historyList" class="list-container">Loading...</div>
+        </div>
+      </div>
 
-            async function fetchUrl() {
-                const u = document.getElementById('urlInput').value;
-                if(!u) return;
-                loading.classList.remove('hidden'); loadingText.innerText = "FETCHING...";
-                try {
-                    const res = await fetch('/proxy?url='+encodeURIComponent(u));
-                    if(!res.ok) throw new Error("Failed");
-                    const blob = await res.blob();
-                    processFile(new File([blob], "remote.jpg", { type: blob.type }));
-                } catch(e) { alert("Error fetching URL"); loading.classList.add('hidden'); }
-            }
+      <script>
+        // --- Navigation Logic ---
+        function setView(v) {
+          document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
+          const idx = ['upload','queue','history'].indexOf(v);
+          document.querySelectorAll('.nav-item')[idx].classList.add('active');
+          document.querySelectorAll('.view').forEach(e => e.classList.remove('active'));
+          document.getElementById('view-'+v).classList.add('active');
+          if(v === 'queue') loadList('draft');
+          if(v === 'history') loadList('history');
+        }
 
-            // --- 🔥 SMART COMPRESS LOGIC (Modified for ~60KB) 🔥 ---
-            async function processFile(f) {
-                loading.classList.remove('hidden'); loadingText.innerText = "OPTIMIZING SIZE...";
-                preUploadPreview.classList.add('hidden');
+        function setInp(t) {
+          document.querySelectorAll('.sub-tab').forEach(e => e.classList.remove('active'));
+          document.querySelectorAll('.inp-area').forEach(e => e.classList.remove('active'));
+          document.getElementById('inp-'+t).classList.add('active');
+          const idx = ['file','url'].indexOf(t);
+          document.querySelectorAll('.sub-tab')[idx].classList.add('active');
+        }
 
-                let originalSize = (f.size/1024).toFixed(1);
-                
-                // Target Threshold: 70KB (Like Supabase check)
-                if(f.size > 71680) {
-                    try {
-                        // 1. First Pass: Supabase Standard (Quality 0.6)
-                        let temp = await compress(f, 0.6); 
+        // --- Upload Logic & Smart Compression ---
+        let currFile = null;
+        document.getElementById('fileInput').addEventListener('change', (e) => processFile(e.target.files[0]));
 
-                        // 2. Safety Check: If still > 80KB, Force Scale Down
-                        // (Supabase ကုဒ်က ဒီအဆင့်မပါတော့ ပုံအကြီးကြီးတွေဆို 100KB ကျော်နေတာပါ)
-                        if (temp.size > 81920) {
-                             // Quality 0.5 + Max Width 1200px (မကြည်မှာမပူနဲ့ ဖုန်းScreenစာလောက်ပဲ ချုံ့တာ)
-                             temp = await compress(f, 0.5, 1200);
-                        }
-                        
-                        // 3. Last Resort: If still > 80KB, Go lower
-                        if (temp.size > 81920) {
-                             temp = await compress(f, 0.4, 1000);
-                        }
+        async function fetchUrl() {
+           const u = document.getElementById('urlInput').value;
+           if(!u) return;
+           try {
+             const res = await fetch('/proxy?url='+encodeURIComponent(u));
+             const blob = await res.blob();
+             processFile(new File([blob], "remote.jpg", { type: blob.type }));
+           } catch(e) { alert("Failed to fetch image"); }
+        }
 
-                        currFile = temp;
-                        let newSize = (currFile.size/1024).toFixed(1);
-                        sizeMsg.innerHTML = \`Original: \${originalSize} KB <i class="fa-solid fa-arrow-right text-slate-400 mx-1"></i> <span class="text-green-600">\${newSize} KB</span>\`;
-                    
-                    } catch(e) { console.error(e); currFile = f; }
-                } else {
-                    currFile = f;
-                    sizeMsg.innerHTML = \`Size: <span class="text-green-600">\${originalSize} KB</span> (No compress needed)\`;
-                }
+        async function processFile(f) {
+           if(!f) return;
+           let msg = \`Original: \${(f.size/1024).toFixed(1)} KB\`;
+           
+           // 🔥 Smart Compression Logic 🔥
+           if(f.size > 71680) { // 70KB Check
+             msg += " <span style='color:#eab308'>(Compressing...)</span>";
+             document.getElementById('sizeMsg').innerHTML = msg;
+             
+             // Step 1: Quality 0.6
+             currFile = await compress(f, 0.6);
+             
+             // Step 2: If still > 80KB, Resize
+             if(currFile.size > 81920) {
+                 currFile = await compress(f, 0.5, 1200); // Scale down
+             }
+             
+             msg += \` ➝ \${(currFile.size/1024).toFixed(1)} KB\`;
+           } else {
+             currFile = f;
+           }
+           
+           document.getElementById('sizeMsg').innerHTML = msg;
+           document.getElementById('previewImg').src = URL.createObjectURL(currFile);
+           document.getElementById('previewBox').style.display = 'block';
+           document.getElementById('resultBox').style.display = 'none';
+        }
+        
+        // Canvas Compressor
+        function compress(file, quality, maxWidth = 0) {
+          return new Promise((resolve) => {
+            const img = document.createElement('img');
+            img.src = URL.createObjectURL(file);
+            img.onload = () => {
+              const canvas = document.createElement('canvas');
+              let w = img.width, h = img.height;
+              
+              if(maxWidth > 0 && w > maxWidth) {
+                  const ratio = maxWidth / w;
+                  w = maxWidth; h = h * ratio;
+              }
+              
+              canvas.width = w; canvas.height = h;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(img, 0, 0, w, h);
+              canvas.toBlob(blob => resolve(new File([blob], file.name, { type: "image/jpeg" })), 'image/jpeg', quality); 
+            };
+          });
+        }
 
-                document.getElementById('imgPreview').src = URL.createObjectURL(currFile);
-                loading.classList.add('hidden');
-                preUploadPreview.classList.remove('hidden');
-                document.getElementById('resultArea').classList.add('hidden');
-            }
+        document.getElementById('uploadBtn').addEventListener('click', async () => {
+           const btn = document.getElementById('uploadBtn');
+           btn.innerText = "Uploading to Thumbsnap..."; btn.disabled = true;
+           
+           const fd = new FormData(); fd.append('file', currFile);
+           try {
+             const res = await fetch('/upload', { method:'POST', body:fd });
+             const data = await res.json();
+             if(data.url) {
+               // Add Date Suffix for freshness (optional)
+               const now = new Date();
+               const suffix = "?" + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0');
+               
+               document.getElementById('directLink').value = data.url + suffix;
+               document.getElementById('resultBox').style.display = 'block';
+               btn.style.display = 'none';
+             }
+           } catch(e) { alert("Error uploading: " + e.message); }
+           btn.innerText = "Upload to Thumbsnap 🚀"; btn.disabled = false;
+        });
 
-            // The Compressor Helper
-            function compress(file, quality, maxWidth = 0) {
-                return new Promise((resolve) => {
-                    const img = document.createElement('img');
-                    img.src = URL.createObjectURL(file);
-                    img.onload = () => {
-                        const canvas = document.createElement('canvas');
-                        let w = img.width;
-                        let h = img.height;
+        // --- Draft & Queue Logic ---
+        async function saveDraft() {
+           const url = document.getElementById('directLink').value;
+           const cap = document.getElementById('caption').value;
+           await fetch('/draft/save', { method:'POST', body:JSON.stringify({url, caption:cap}) });
+           alert("Added to Queue ✅");
+           document.getElementById('caption').value = "";
+           setView('queue');
+        }
 
-                        // Smart Resize: Only if maxWidth is set and image is wider
-                        if (maxWidth > 0 && w > maxWidth) {
-                            const ratio = maxWidth / w;
-                            w = maxWidth;
-                            h = h * ratio;
-                        }
+        async function loadList(type) {
+           const targetId = type === 'draft' ? 'queueList' : 'historyList';
+           const div = document.getElementById(targetId);
+           div.innerHTML = "<div style='text-align:center; color:#94a3b8; padding:20px;'>Loading...</div>";
+           
+           try {
+             const res = await fetch(type === 'draft' ? '/draft/list' : '/history/list');
+             const data = await res.json();
+             const items = data.items || [];
 
-                        canvas.width = w; canvas.height = h;
-                        const ctx = canvas.getContext('2d');
-                        ctx.drawImage(img, 0, 0, w, h);
-                        
-                        canvas.toBlob(blob => {
-                            resolve(new File([blob], file.name, { type: "image/jpeg" }));
-                        }, 'image/jpeg', quality);
-                    };
-                });
-            }
+             if(items.length === 0) {
+               div.innerHTML = "<div style='text-align:center; color:#94a3b8; padding:20px;'>Empty</div>";
+               return;
+             }
 
-            // --- Upload Logic ---
-            document.getElementById('uploadBtn').addEventListener('click', async () => {
-                loading.classList.remove('hidden'); loadingText.innerText = "UPLOADING...";
-                const fd = new FormData(); fd.append('file', currFile);
+             div.innerHTML = items.map(i => {
+               const date = new Date(i.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+               
+               if(type === 'draft') {
+                 return \`
+                   <div class="item">
+                     <img src="\${i.image_url}" class="thumb" onclick="window.open(this.src)">
+                     <div class="info">
+                       <div class="caption">\${i.caption || '<i style="color:#ccc">No Caption</i>'}</div>
+                       <div class="meta">\${date}</div>
+                     </div>
+                     <div class="actions">
+                       <button class="btn-sm" style="background:#10b981" onclick="sendDraft('\${i.id}')">Send</button>
+                       <button class="btn-sm" style="background:#ef4444" onclick="delDraft('\${i.id}')">Del</button>
+                     </div>
+                   </div>\`;
+               } else {
+                 return \`
+                   <div class="item">
+                     <img src="\${i.public_url}" class="thumb" onclick="window.open(this.src)">
+                     <div class="info">
+                       <div class="caption" style="font-size:12px; color:#2563eb;">\${i.file_name}</div>
+                       <div class="meta">\${date}</div>
+                     </div>
+                     <div class="actions">
+                       <button class="btn-sm" style="background:#3b82f6" onclick="copyUrl('\${i.public_url}')">Copy</button>
+                       <button class="btn-sm" style="background:#ef4444" onclick="delHist('\${i.id}')">Del</button>
+                     </div>
+                   </div>\`;
+               }
+             }).join('');
+           } catch(e) {
+             div.innerHTML = "<div style='color:red; text-align:center'>Error loading list</div>";
+           }
+        }
 
-                try {
-                    const res = await fetch('/process', { method:'POST', body:fd });
-                    const d = await res.json();
-                    if(d.error) throw new Error(d.error);
-
-                    const now = new Date();
-                    const suffix = "?" + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0');
-                    document.getElementById('directLink').value = d.data.media + suffix;
-                    preUploadPreview.classList.add('hidden');
-                    document.getElementById('resultArea').classList.remove('hidden');
-                } catch(e) { 
-                    alert(e.message); 
-                } finally { loading.classList.add('hidden'); }
-            });
-
-            function copyLink() {
-                const c = document.getElementById("directLink"); c.select();
-                navigator.clipboard.writeText(c.value);
-            }
-        </script>
+        // --- Actions ---
+        async function sendDraft(id) {
+           const res = await fetch('/draft/list'); const d = await res.json();
+           const item = d.items.find(x => x.id === id);
+           if(!item) return;
+           await fetch('/draft/send', { method:'POST', body:JSON.stringify(item) });
+           loadList('draft');
+        }
+        async function delDraft(id) {
+           if(!confirm("Delete?")) return;
+           await fetch('/draft/delete', { method:'POST', body:JSON.stringify({id}) });
+           loadList('draft');
+        }
+        async function sendAll() {
+           const res = await fetch('/draft/list'); const d = await res.json();
+           if(d.items.length === 0) return alert("Queue is empty");
+           if(!confirm(\`Send all \${d.items.length} posts?\`)) return;
+           for(const item of d.items) {
+             await fetch('/draft/send', { method:'POST', body:JSON.stringify(item) });
+             await new Promise(r => setTimeout(r, 1000));
+           }
+           alert("All Sent! 🎉");
+           loadList('draft');
+        }
+        async function delHist(id) {
+           if(!confirm("Delete from history?")) return;
+           await fetch('/history/delete', { method:'POST', body:JSON.stringify({id}) });
+           loadList('history');
+        }
+        function copyUrl(u) { navigator.clipboard.writeText(u); alert("Copied!"); }
+        function copyLink() { copyUrl(document.getElementById('directLink').value); }
+      </script>
     </body>
     </html>
-  `);
+  `, { headers: { "content-type": "text/html; charset=utf-8" } });
 });
-
-// --- 3. Backend Logic ---
-app.post("/process", async (c) => {
-  try {
-    const body = await c.req.parseBody();
-    const file = body['file'];
-    if (!file) return c.json({ error: "No file" }, 400);
-
-    const fd = new FormData();
-    fd.append("key", API_KEY);
-    fd.append("content", "1"); fd.append("adult", "1");
-    fd.append("media", new Blob([await file.arrayBuffer()], { type: "image/jpeg" }), "img.jpg");
-
-    const tsResp = await fetch(API_URL, { method: "POST", body: fd });
-    const tsResult = await tsResp.json();
-
-    if (!tsResult.success) return c.json({ error: tsResult.error?.message || "Failed" }, 400);
-    return c.json({ success: true, data: tsResult.data });
-
-  } catch (e) { return c.json({ error: e.message }, 500); }
-});
-
-Deno.serve(app.fetch);

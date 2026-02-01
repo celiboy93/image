@@ -5,7 +5,7 @@ const THUMBSNAP_KEY = "0004640d6fb420fbe95d270e65ab0ccb";
 const TG_BOT_TOKEN = Deno.env.get("TG_BOT_TOKEN") || ""; 
 const TG_CHAT_ID = Deno.env.get("TG_CHAT_ID") || ""; 
 
-// 🏦 Deno KV Database (Supabase DB အစားထိုး)
+// 🏦 Deno KV Database
 const kv = await Deno.openKv();
 
 serve(async (req) => {
@@ -16,7 +16,11 @@ serve(async (req) => {
     const targetUrl = url.searchParams.get("url");
     if (!targetUrl) return new Response("Missing URL", { status: 400 });
     try {
-      const resp = await fetch(targetUrl);
+      const resp = await fetch(targetUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+      });
       return new Response(resp.body, { headers: { "Content-Type": resp.headers.get("Content-Type") || "image/jpeg" }});
     } catch (e) { return new Response("Error", { status: 500 }); }
   }
@@ -34,7 +38,21 @@ serve(async (req) => {
       tsData.append("media", file);
       tsData.append("adult", "1"); // 18+ ON
 
-      const tsRes = await fetch("https://thumbsnap.com/api/upload", { method: "POST", body: tsData });
+      // ✅ ပြင်ဆင်ထားသည့်နေရာ - Browser အယောင်ဆောင်ရန် Header ထည့်ထားသည်
+      const tsRes = await fetch("https://thumbsnap.com/api/upload", { 
+        method: "POST", 
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        },
+        body: tsData 
+      });
+
+      // API Error စစ်ဆေးခြင်း
+      if (!tsRes.ok) {
+         console.error("Thumbsnap Error Status:", tsRes.status);
+         throw new Error(`Upload Failed: Server returned ${tsRes.status}`);
+      }
+
       const tsJson = await tsRes.json();
 
       if (!tsJson.success) throw new Error(tsJson.error?.message || "Upload Failed");
@@ -47,7 +65,9 @@ serve(async (req) => {
       await kv.set(["history", id], historyItem);
 
       return new Response(JSON.stringify({ url: publicUrl }), { headers: { "Content-Type": "application/json" } });
-    } catch (err) { return new Response(JSON.stringify({ error: err.message }), { status: 500 }); }
+    } catch (err) { 
+      return new Response(JSON.stringify({ error: err.message }), { status: 500 }); 
+    }
   }
 
   // --- 3. Draft/Queue APIs (Using Deno KV) ---
@@ -326,6 +346,8 @@ serve(async (req) => {
                document.getElementById('directLink').value = data.url + suffix;
                document.getElementById('resultBox').style.display = 'block';
                btn.style.display = 'none';
+             } else {
+                alert("Upload failed: " + (data.error || "Unknown error"));
              }
            } catch(e) { alert("Error uploading: " + e.message); }
            btn.innerText = "Upload to Thumbsnap 🚀"; btn.disabled = false;
